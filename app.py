@@ -1,5 +1,5 @@
 import streamlit as st
-from openai import OpenAI
+import google.generativeai as genai
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import json
@@ -15,7 +15,7 @@ import re
 
 # ── Config ──────────────────────────────────────────────────────────────────
 EXCEL_PATH = Path("notas_fiscais.xlsx")
-OPENAI_MODEL = "gpt-4o"
+GEMINI_MODEL = "gemini-1.5-flash"
 
 st.set_page_config(
     page_title="NF Smart Data",
@@ -328,46 +328,41 @@ Se um campo não for encontrado, use string vazia "".
 Retorne APENAS o JSON, sem explicações."""
 
 
-def get_openai_client():
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+def get_gemini_model():
+    api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
-        st.error("❌ Chave OPENAI_API_KEY não configurada. Adicione nas configurações do Streamlit Cloud.")
+        st.error("❌ Chave GEMINI_API_KEY não configurada. Adicione nas configurações do Streamlit Cloud.")
         st.stop()
-    return OpenAI(api_key=api_key)
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(GEMINI_MODEL, system_instruction=SYSTEM_PROMPT)
 
 
-def extract_with_openai(messages_content: list) -> dict:
-    """Call OpenAI API to extract NF fields."""
-    client = get_openai_client()
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        max_tokens=1000,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": messages_content},
-        ],
-    )
-    raw = response.choices[0].message.content.strip()
+def extract_with_gemini(parts: list) -> dict:
+    """Call Gemini API to extract NF fields."""
+    model = get_gemini_model()
+    response = model.generate_content(parts)
+    raw = response.text.strip()
     raw = re.sub(r"```json|```", "", raw).strip()
     return json.loads(raw)
 
 
 def extract_from_image(image_bytes: bytes, media_type: str) -> dict:
-    b64 = base64.standard_b64encode(image_bytes).decode()
-    content = [
-        {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{b64}"}},
-        {"type": "text", "text": "Extraia os dados desta nota fiscal."},
+    from google.generativeai.types import BlobType
+    parts = [
+        {"mime_type": media_type, "data": image_bytes},
+        "Extraia os dados desta nota fiscal.",
     ]
-    return extract_with_openai(content)
+    return extract_with_gemini(parts)
 
 
 def extract_from_pdf(pdf_bytes: bytes) -> dict:
     images_b64 = pdf_to_base64_images(pdf_bytes)
-    content = []
-    for img_b64 in images_b64[:3]:  # max 3 pages
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}})
-    content.append({"type": "text", "text": "Extraia os dados desta nota fiscal."})
-    return extract_with_openai(content)
+    parts = []
+    for img_b64 in images_b64[:3]:
+        img_bytes = base64.b64decode(img_b64)
+        parts.append({"mime_type": "image/png", "data": img_bytes})
+    parts.append("Extraia os dados desta nota fiscal.")
+    return extract_with_gemini(parts)
 
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -406,9 +401,8 @@ if uploaded:
             if ext == "xml":
                 extracted = parse_xml_nf(file_bytes)
                 if not any(extracted.values()):
-                    # fallback to OpenAI
-                    extracted = extract_with_openai([
-                        {"type": "text", "text": f"Dados XML da NF:\n{file_bytes.decode('utf-8', errors='replace')}\n\nExtraia os campos."}
+                    extracted = extract_with_gemini([
+                        f"Dados XML da NF:\n{file_bytes.decode('utf-8', errors='replace')}\n\nExtraia os campos."
                     ])
             elif ext == "pdf":
                 extracted = extract_from_pdf(file_bytes)
