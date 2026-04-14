@@ -15,7 +15,7 @@ import re
 
 # ── Config ──────────────────────────────────────────────────────────────────
 EXCEL_PATH = Path("notas_fiscais.xlsx")
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.0-flash"
 
 st.set_page_config(
     page_title="NF Smart Data",
